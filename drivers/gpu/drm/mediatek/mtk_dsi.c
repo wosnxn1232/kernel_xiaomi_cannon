@@ -98,16 +98,13 @@
 #define CON_CTRL_FLD_REG_DUAL_EN REG_FLD_MSB_LSB(4, 4)
 #define DSI_CM_WAIT_FIFO_FULL_EN BIT(27)
 
-#define DSI_MODE_CTRL 0x14
-#define MODE (3)
-#define CMD_MODE 0
-#define SYNC_PULSE_MODE 1
-#define SYNC_EVENT_MODE 2
-#define BURST_MODE 3
-#define FRM_MODE BIT(16)
-#define MIX_MODE BIT(17)
-#define SLEEP_MODE BIT(20)
-#define MODE_FLD_REG_MODE_CON REG_FLD_MSB_LSB(1, 0)
+#define DSI_PSCTRL		0x1c
+#define DSI_PS_WC			0x3fff
+#define DSI_PS_SEL			(3 << 16)
+#define PACKED_PS_16BIT_RGB565		(0 << 16)
+#define PACKED_PS_18BIT_RGB666		(1 << 16)
+#define LOOSELY_PS_24BIT_RGB666		(2 << 16)
+#define PACKED_PS_24BIT_RGB888		(3 << 16)
 
 #define DSI_TXRX_CTRL 0x18
 #define VC_NUM BIT(1)
@@ -1130,30 +1127,19 @@ static void mtk_dsi_ps_control_vact(struct mtk_dsi *dsi)
 		ps_wc = width * dsi_buf_bpp;
 		SET_VAL_MASK(value, mask, ps_wc, DSI_PS_WC);
 
-		switch (dsi->format) {
-		case MIPI_DSI_FMT_RGB888:
-			SET_VAL_MASK(value, mask, 3, DSI_PS_SEL);
-			break;
-		case MIPI_DSI_FMT_RGB666:
-			SET_VAL_MASK(value, mask, 2, DSI_PS_SEL);
-			break;
-		case MIPI_DSI_FMT_RGB666_PACKED:
-			SET_VAL_MASK(value, mask, 1, DSI_PS_SEL);
-			break;
-		case MIPI_DSI_FMT_RGB565:
-			SET_VAL_MASK(value, mask, 0, DSI_PS_SEL);
-			break;
-		}
-		size = (height << 16) + width;
-	} else {
-		ps_wc = (((dsc_params->chunk_size + 2) / 3) * 3);
-		if (dsc_params->slice_mode == 1)
-			ps_wc *= 2;
-
-		SET_VAL_MASK(value, mask, ps_wc, DSI_PS_WC);
-		SET_VAL_MASK(value, mask, 5, DSI_PS_SEL);
-
-		size = (height << 16) + (ps_wc / 3);
+	switch (dsi->format) {
+	case MIPI_DSI_FMT_RGB888:
+		ps_bpp_mode |= PACKED_PS_24BIT_RGB888;
+		break;
+	case MIPI_DSI_FMT_RGB666:
+		ps_bpp_mode |= LOOSELY_PS_24BIT_RGB666;
+		break;
+	case MIPI_DSI_FMT_RGB666_PACKED:
+		ps_bpp_mode |= PACKED_PS_18BIT_RGB666;
+		break;
+	case MIPI_DSI_FMT_RGB565:
+		ps_bpp_mode |= PACKED_PS_16BIT_RGB565;
+		break;
 	}
 
 	writel(height, dsi->regs + DSI_VACT_NL);
@@ -1207,7 +1193,39 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 	writel(DSI_WMEM_CONTI, dsi->regs + DSI_MEM_CONTI);
 }
 
-static void mtk_dsi_calc_vdo_timing(struct mtk_dsi *dsi)
+static void mtk_dsi_ps_control(struct mtk_dsi *dsi)
+{
+	u32 dsi_tmp_buf_bpp;
+	u32 tmp_reg;
+
+	switch (dsi->format) {
+	case MIPI_DSI_FMT_RGB888:
+		tmp_reg = PACKED_PS_24BIT_RGB888;
+		dsi_tmp_buf_bpp = 3;
+		break;
+	case MIPI_DSI_FMT_RGB666:
+		tmp_reg = LOOSELY_PS_24BIT_RGB666;
+		dsi_tmp_buf_bpp = 3;
+		break;
+	case MIPI_DSI_FMT_RGB666_PACKED:
+		tmp_reg = PACKED_PS_18BIT_RGB666;
+		dsi_tmp_buf_bpp = 3;
+		break;
+	case MIPI_DSI_FMT_RGB565:
+		tmp_reg = PACKED_PS_16BIT_RGB565;
+		dsi_tmp_buf_bpp = 2;
+		break;
+	default:
+		tmp_reg = PACKED_PS_24BIT_RGB888;
+		dsi_tmp_buf_bpp = 3;
+		break;
+	}
+
+	tmp_reg += dsi->vm.hactive * dsi_tmp_buf_bpp & DSI_PS_WC;
+	writel(tmp_reg, dsi->regs + DSI_PSCTRL);
+}
+
+static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 {
 	u32 horizontal_sync_active_byte;
 	u32 horizontal_backporch_byte;
@@ -1726,8 +1744,11 @@ static void mtk_dsi_enter_ulps(struct mtk_dsi *dsi)
 		}
 	}
 
-	/* reset related setting */
-	mtk_dsi_mask(dsi, DSI_INTEN, SLEEPIN_ULPS_DONE_INT_FLAG, 0);
+	mtk_dsi_reset_engine(dsi);
+	mtk_dsi_lane0_ulp_mode_enter(dsi);
+	mtk_dsi_clk_ulp_mode_enter(dsi);
+	/* set the lane number as 0 to pull down mipi */
+	writel(0, dsi->regs + DSI_TXRX_CTRL);
 
 	mtk_mipi_tx_pre_oe_config(dsi->phy, 0);
 	mtk_mipi_tx_sw_control_en(dsi->phy, 1);

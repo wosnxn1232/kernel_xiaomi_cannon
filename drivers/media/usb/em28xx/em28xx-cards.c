@@ -3644,6 +3644,8 @@ static int em28xx_usb_probe(struct usb_interface *interface,
 		goto err_free;
 	}
 
+	kref_init(&dev->ref);
+
 	dev->devno = nr;
 	dev->model = id->driver_info;
 	dev->alt   = -1;
@@ -3730,8 +3732,6 @@ static int em28xx_usb_probe(struct usb_interface *interface,
 			dev->dvb_xfer_bulk ? "bulk" : "isoc");
 	}
 
-	kref_init(&dev->ref);
-
 	request_modules(dev);
 
 	/*
@@ -3740,6 +3740,10 @@ static int em28xx_usb_probe(struct usb_interface *interface,
 	 * topology will likely change after the load of the em28xx subdrivers.
 	 */
 #ifdef CONFIG_MEDIA_CONTROLLER
+	/*
+	 * No need to check the return value, the device will still be
+	 * usable without media controller API.
+	 */
 	retval = media_device_register(dev->media_dev);
 #endif
 
